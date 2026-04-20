@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MovieMatch
 
-## Getting Started
+Swipe movies with a friend (or a whole group). When everyone likes the same one, it's a match.
 
-First, run the development server:
+Think of it as Tinder for "what should we watch tonight?"
+
+## How it works
+
+1. Someone **creates a room** and gets a 6-letter code.
+2. Everyone else **joins with the code**.
+3. You all swipe through the same deck of movies — like or pass.
+4. When every member has liked the same movie, it shows up in the **matches** bar.
+
+## Stack
+
+- Next.js (App Router) + TypeScript + Tailwind CSS
+- In-memory room store (per-server process, resets on restart)
+- Client-side polling for room state (every 2s)
+- Optional TMDB API for real movie data; hardcoded fallback otherwise
+
+## Getting started
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Optional: use real movie data from TMDB
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+cp .env.local.example .env.local
+# edit .env.local and paste your TMDB v4 bearer token into TMDB_API_KEY
+```
 
-## Learn More
+Grab a key at https://www.themoviedb.org/settings/api.
 
-To learn more about Next.js, take a look at the following resources:
+## Project layout
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+src/
+  app/
+    page.tsx                   landing (create/join)
+    room/[code]/page.tsx       room (server)
+    room/[code]/RoomClient.tsx swipe deck + matches (client)
+    api/rooms/...              REST endpoints
+    _components/               shared UI
+  lib/
+    rooms.ts                   in-memory room store + match logic
+    movies.ts                  TMDB fetcher + fallback list
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Known limitations
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Room state is in-memory on the server process. A production deploy needs Redis/DB-backed storage.
+- Polling (2s) instead of websockets. Fine for small groups; swap to Pusher / Ably / SSE for bigger rooms.
+- No auth — rooms are identified by code only. Anyone with the code can join.
