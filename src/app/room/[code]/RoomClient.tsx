@@ -79,7 +79,6 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   useEffect(() => {
     if (joinStartedRef.current) return;
     joinStartedRef.current = true;
-    let cancelled = false;
     async function init() {
       const stored =
         typeof window !== "undefined" ? localStorage.getItem(LS_KEY(code)) : null;
@@ -98,7 +97,6 @@ export default function RoomClient({ code, initialName, movies }: Props) {
           return;
         }
         const data = (await res.json()) as { userId: string };
-        if (cancelled) return;
         localStorage.setItem(LS_KEY(code), data.userId);
         if (name) localStorage.setItem("moviematch:name", name);
         setUserId(data.userId);
@@ -107,9 +105,6 @@ export default function RoomClient({ code, initialName, movies }: Props) {
       }
     }
     init();
-    return () => {
-      cancelled = true;
-    };
   }, [code, initialName]);
 
   useEffect(() => {
