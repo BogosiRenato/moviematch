@@ -409,6 +409,7 @@ function MovieCard({
       {!stacked && (
         <div className="absolute bottom-4 right-4 flex gap-3">
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               if (onPass) {
@@ -422,6 +423,7 @@ function MovieCard({
             ✕
           </button>
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               if (onLike) {
