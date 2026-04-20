@@ -133,21 +133,19 @@ export function touchMember(code: string, userId: string): void {
 }
 
 export function getMatches(room: Room): string[] {
-  const memberIds = Object.keys(room.members);
-  if (memberIds.length < 2) return [];
+  const active = Object.values(room.members).filter(
+    (m) => Object.keys(m.swipes).length > 0,
+  );
+  if (active.length < 2) return [];
 
   const candidates = new Set<string>();
-  for (const mid of memberIds) {
-    for (const movieId of Object.keys(room.members[mid].swipes)) {
-      candidates.add(movieId);
-    }
+  for (const m of active) {
+    for (const movieId of Object.keys(m.swipes)) candidates.add(movieId);
   }
 
   const matches: string[] = [];
   for (const movieId of candidates) {
-    const everyoneLiked = memberIds.every(
-      (mid) => room.members[mid].swipes[movieId] === "like",
-    );
+    const everyoneLiked = active.every((m) => m.swipes[movieId] === "like");
     if (everyoneLiked) matches.push(movieId);
   }
   return matches;

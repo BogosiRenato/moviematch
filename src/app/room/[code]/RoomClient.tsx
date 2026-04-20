@@ -19,6 +19,7 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [matchQueue, setMatchQueue] = useState<string[]>([]);
   const seenMatches = useRef<Set<string>>(new Set());
+  const joinStartedRef = useRef(false);
 
   useEffect(() => {
     if (!state) return;
@@ -67,6 +68,8 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   }, [code, userId]);
 
   useEffect(() => {
+    if (joinStartedRef.current) return;
+    joinStartedRef.current = true;
     let cancelled = false;
     async function init() {
       const stored =
