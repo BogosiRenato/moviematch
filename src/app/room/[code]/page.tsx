@@ -12,7 +12,7 @@ export default async function RoomPage({
 }) {
   const { code } = await params;
   const { name } = await searchParams;
-  const room = getRoom(code);
+  const room = await getRoom(code);
   if (!room) notFound();
   const movies = await getMovies();
   return <RoomClient code={room.code} initialName={name ?? ""} movies={movies} />;

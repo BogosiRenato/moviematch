@@ -13,7 +13,7 @@ export async function POST(
   if (!body.userId || !body.movieId) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
-  const result = decideMovie(code, body.userId, body.movieId);
+  const result = await decideMovie(code, body.userId, body.movieId);
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });
   }
@@ -28,7 +28,7 @@ export async function DELETE(
   const url = new URL(req.url);
   const userId = url.searchParams.get("userId");
   if (!userId) return NextResponse.json({ error: "userId required" }, { status: 400 });
-  const ok = clearDecision(code, userId);
+  const ok = await clearDecision(code, userId);
   if (!ok) return NextResponse.json({ error: "Not in room" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

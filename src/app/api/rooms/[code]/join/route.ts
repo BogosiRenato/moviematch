@@ -10,7 +10,7 @@ export async function POST(
     name?: string;
     userId?: string;
   };
-  const result = joinRoom(code, body.name ?? "", body.userId);
+  const result = await joinRoom(code, body.name ?? "", body.userId);
   if (!result) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
   }

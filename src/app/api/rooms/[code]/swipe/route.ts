@@ -14,7 +14,7 @@ export async function POST(
   if (!body.userId || !body.movieId || (body.swipe !== "like" && body.swipe !== "pass")) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
-  const ok = recordSwipe(code, body.userId, body.movieId, body.swipe);
+  const ok = await recordSwipe(code, body.userId, body.movieId, body.swipe);
   if (!ok) return NextResponse.json({ error: "Not in room" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

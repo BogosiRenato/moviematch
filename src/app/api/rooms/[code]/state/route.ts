@@ -8,8 +8,8 @@ export async function GET(
   const { code } = await ctx.params;
   const url = new URL(req.url);
   const userId = url.searchParams.get("userId") ?? undefined;
-  if (userId) touchMember(code, userId);
-  const state = getRoomState(code, userId);
+  if (userId) await touchMember(code, userId);
+  const state = await getRoomState(code, userId);
   if (!state) return NextResponse.json({ error: "Room not found" }, { status: 404 });
   return NextResponse.json(state);
 }
