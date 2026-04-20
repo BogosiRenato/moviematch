@@ -35,7 +35,7 @@ export function CreateRoomButton() {
         placeholder="Your name (optional)"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        className="w-full rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-sm placeholder:text-neutral-600 focus:outline-none focus:border-pink-500/50"
+        className="w-full rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-sm text-white placeholder:text-neutral-600 focus:outline-none focus:border-pink-500/50"
         maxLength={24}
       />
       <button
@@ -74,7 +74,7 @@ export function JoinRoomForm() {
         placeholder="Room code"
         value={code}
         onChange={(e) => setCode(e.target.value.toUpperCase())}
-        className="w-full rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-center text-lg font-mono tracking-[0.5em] uppercase placeholder:text-neutral-600 placeholder:tracking-normal focus:outline-none focus:border-pink-500/50"
+        className="w-full rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-center text-lg font-mono tracking-[0.5em] uppercase text-white placeholder:text-neutral-600 placeholder:tracking-normal focus:outline-none focus:border-pink-500/50"
         maxLength={6}
       />
       <input
@@ -82,7 +82,7 @@ export function JoinRoomForm() {
         placeholder="Your name (optional)"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        className="w-full rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-sm placeholder:text-neutral-600 focus:outline-none focus:border-pink-500/50"
+        className="w-full rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-sm text-white placeholder:text-neutral-600 focus:outline-none focus:border-pink-500/50"
         maxLength={24}
       />
       <button
