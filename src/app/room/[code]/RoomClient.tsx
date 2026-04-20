@@ -17,6 +17,54 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   const [userId, setUserId] = useState<string | null>(null);
   const [state, setState] = useState<RoomStateView | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [matchQueue, setMatchQueue] = useState<string[]>([]);
+  const seenMatches = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!state) return;
+    const fresh = state.matches.filter((id) => !seenMatches.current.has(id));
+    if (fresh.length === 0) return;
+    for (const id of fresh) seenMatches.current.add(id);
+    setMatchQueue((q) => [...q, ...fresh]);
+  }, [state]);
+
+  const movieById = useMemo(() => {
+    const m = new Map<string, Movie>();
+    for (const movie of movies) m.set(movie.id, movie);
+    return m;
+  }, [movies]);
+
+  const dismissTopMatch = useCallback(() => {
+    setMatchQueue((q) => q.slice(1));
+  }, []);
+
+  const pickMovie = useCallback(
+    async (movieId: string) => {
+      if (!userId) return;
+      try {
+        await fetch(`/api/rooms/${code}/decide`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId, movieId }),
+        });
+      } catch {
+        // ignore
+      }
+    },
+    [code, userId],
+  );
+
+  const keepSwiping = useCallback(async () => {
+    if (!userId) return;
+    try {
+      await fetch(`/api/rooms/${code}/decide?userId=${userId}`, {
+        method: "DELETE",
+      });
+      setState((prev) => (prev ? { ...prev, decision: undefined } : prev));
+    } catch {
+      // ignore
+    }
+  }, [code, userId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,13 +169,41 @@ export default function RoomClient({ code, initialName, movies }: Props) {
     );
   }
 
+  const decidedMovie = state?.decision
+    ? movieById.get(state.decision.movieId)
+    : undefined;
+  const topMatchId = matchQueue[0];
+  const topMatchMovie = topMatchId ? movieById.get(topMatchId) : undefined;
+  const showMatchModal = !!topMatchMovie && !state?.decision;
+
   return (
     <main className="flex flex-1 flex-col px-4 py-6 max-w-2xl mx-auto w-full">
       <RoomHeader code={code} state={state} />
-      <div className="flex-1 flex items-center justify-center py-8">
-        <SwipeDeck queue={queue} onSwipe={handleSwipe} />
-      </div>
-      <MatchesBar matches={state?.matches ?? []} movies={movies} />
+      {decidedMovie && state?.decision ? (
+        <WatchScreen
+          movie={decidedMovie}
+          decidedByName={state.decision.decidedByName}
+          onUndo={keepSwiping}
+        />
+      ) : (
+        <>
+          <div className="flex-1 flex items-center justify-center py-8">
+            <SwipeDeck queue={queue} onSwipe={handleSwipe} />
+          </div>
+          <MatchesBar matches={state?.matches ?? []} movies={movies} />
+        </>
+      )}
+      {showMatchModal && topMatchMovie && (
+        <MatchModal
+          movie={topMatchMovie}
+          members={state?.members ?? []}
+          onDismiss={dismissTopMatch}
+          onPick={async () => {
+            await pickMovie(topMatchMovie.id);
+            dismissTopMatch();
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -375,6 +451,130 @@ function MatchesBar({ matches, movies }: { matches: string[]; movies: Movie[] })
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function MatchModal({
+  movie,
+  members,
+  onDismiss,
+  onPick,
+}: {
+  movie: Movie;
+  members: RoomStateView["members"];
+  onDismiss: () => void;
+  onPick: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
+      onClick={onDismiss}
+    >
+      <div
+        className="relative w-full max-w-md rounded-3xl overflow-hidden border border-pink-500/40 bg-gradient-to-b from-pink-950/80 to-neutral-950 shadow-2xl shadow-pink-500/20"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-5 text-center">
+          <p className="text-xs uppercase tracking-[0.4em] text-pink-300/70">
+            It&rsquo;s a match
+          </p>
+          <h2 className="mt-1 text-4xl font-black bg-gradient-to-r from-pink-300 to-rose-400 bg-clip-text text-transparent">
+            🎬🍿
+          </h2>
+        </div>
+        <div className="relative aspect-[2/3] max-h-[60vh] mx-auto w-full px-5">
+          <div className="relative w-full h-full rounded-2xl overflow-hidden shadow-xl">
+            <Image
+              src={movie.posterUrl}
+              alt={movie.title}
+              fill
+              sizes="(max-width: 640px) 100vw, 384px"
+              className="object-cover"
+              unoptimized
+              priority
+            />
+          </div>
+        </div>
+        <div className="p-5 space-y-1 text-center">
+          <h3 className="text-2xl font-bold">{movie.title}</h3>
+          <p className="text-neutral-400">
+            {movie.year} · ★ <span className="text-amber-300">{movie.rating}</span>
+          </p>
+          <p className="text-sm text-neutral-400 pt-2">
+            Everyone in the room liked this one.
+          </p>
+          <div className="flex justify-center gap-1 pt-2">
+            {members.map((m) => (
+              <span
+                key={m.id}
+                className="inline-flex items-center gap-1 text-xs bg-neutral-800/80 border border-neutral-700 rounded-full px-2 py-1"
+              >
+                <span className="h-2 w-2 rounded-full bg-pink-500" />
+                {m.name}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="p-5 pt-0 flex gap-3">
+          <button
+            onClick={onDismiss}
+            className="flex-1 rounded-xl border border-neutral-700 bg-neutral-900 py-3 font-semibold text-neutral-200 hover:bg-neutral-800 transition"
+          >
+            Keep swiping
+          </button>
+          <button
+            onClick={onPick}
+            className="flex-1 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 py-3 font-bold text-white shadow-lg shadow-pink-500/30 hover:opacity-95 transition"
+          >
+            Pick this one
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WatchScreen({
+  movie,
+  decidedByName,
+  onUndo,
+}: {
+  movie: Movie;
+  decidedByName: string;
+  onUndo: () => void;
+}) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center py-6 text-center">
+      <p className="text-xs uppercase tracking-[0.4em] text-pink-300/70">
+        You&rsquo;re watching
+      </p>
+      <h2 className="mt-2 text-3xl font-black">🍿</h2>
+      <div className="relative w-48 aspect-[2/3] my-5 rounded-2xl overflow-hidden shadow-2xl shadow-pink-500/20 border border-pink-500/40">
+        <Image
+          src={movie.posterUrl}
+          alt={movie.title}
+          fill
+          sizes="192px"
+          className="object-cover"
+          unoptimized
+          priority
+        />
+      </div>
+      <h3 className="text-3xl font-bold">{movie.title}</h3>
+      <p className="text-neutral-400 mt-1">
+        {movie.year} · ★ <span className="text-amber-300">{movie.rating}</span>
+      </p>
+      <p className="text-sm text-neutral-500 mt-4 max-w-sm">{movie.overview}</p>
+      <p className="text-xs text-neutral-600 mt-6">
+        Chosen by <span className="text-pink-400">{decidedByName}</span>
+      </p>
+      <button
+        onClick={onUndo}
+        className="mt-4 text-xs text-neutral-400 hover:text-pink-300 underline underline-offset-4"
+      >
+        Actually, let&rsquo;s keep swiping
+      </button>
     </div>
   );
 }

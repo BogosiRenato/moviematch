@@ -10,10 +10,18 @@ export type Member = {
   swipes: Record<string, Swipe>;
 };
 
+export type Decision = {
+  movieId: string;
+  decidedBy: string;
+  decidedByName: string;
+  at: number;
+};
+
 export type Room = {
   code: string;
   createdAt: number;
   members: Record<string, Member>;
+  decision?: Decision;
 };
 
 type GlobalWithRooms = typeof globalThis & {
@@ -87,6 +95,36 @@ export function recordSwipe(
   return true;
 }
 
+export function decideMovie(
+  code: string,
+  userId: string,
+  movieId: string,
+): { ok: true; decision: Decision } | { ok: false; error: string } {
+  const room = getRoom(code);
+  if (!room) return { ok: false, error: "Room not found" };
+  const member = room.members[userId];
+  if (!member) return { ok: false, error: "Not in room" };
+  if (!getMatches(room).includes(movieId)) {
+    return { ok: false, error: "Not a match" };
+  }
+  if (room.decision) return { ok: true, decision: room.decision };
+  room.decision = {
+    movieId,
+    decidedBy: userId,
+    decidedByName: member.name,
+    at: Date.now(),
+  };
+  return { ok: true, decision: room.decision };
+}
+
+export function clearDecision(code: string, userId: string): boolean {
+  const room = getRoom(code);
+  if (!room) return false;
+  if (!room.members[userId]) return false;
+  delete room.decision;
+  return true;
+}
+
 export function touchMember(code: string, userId: string): void {
   const room = getRoom(code);
   if (!room) return;
@@ -124,6 +162,7 @@ export type RoomStateView = {
     online: boolean;
   }>;
   matches: string[];
+  decision?: Decision;
   you?: {
     id: string;
     swipes: Record<string, Swipe>;
@@ -145,6 +184,7 @@ export function getRoomState(code: string, userId?: string): RoomStateView | nul
       online: now - m.lastSeen < ONLINE_WINDOW_MS,
     })),
     matches: getMatches(room),
+    decision: room.decision,
     you:
       userId && room.members[userId]
         ? { id: userId, swipes: room.members[userId].swipes }
