@@ -199,6 +199,10 @@ export default function RoomClient({ code, initialName, movies }: Props) {
           decidedByName={state.decision.decidedByName}
           onUndo={keepSwiping}
         />
+      ) : !userId || !state?.you ? (
+        <div className="flex-1 flex items-center justify-center py-8">
+          <p className="text-neutral-500 text-sm animate-pulse">Joining room…</p>
+        </div>
       ) : (
         <>
           <div className="flex-1 flex items-center justify-center py-8">
