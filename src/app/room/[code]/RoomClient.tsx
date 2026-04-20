@@ -20,6 +20,15 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   const [matchQueue, setMatchQueue] = useState<string[]>([]);
   const seenMatches = useRef<Set<string>>(new Set());
   const joinStartedRef = useRef(false);
+  const localSwipes = useRef<Record<string, Swipe>>({});
+
+  const mergeLocal = useCallback((s: RoomStateView): RoomStateView => {
+    if (!s.you) return s;
+    return {
+      ...s,
+      you: { ...s.you, swipes: { ...s.you.swipes, ...localSwipes.current } },
+    };
+  }, []);
 
   useEffect(() => {
     if (!state) return;
@@ -114,7 +123,7 @@ export default function RoomClient({ code, initialName, movies }: Props) {
         );
         if (!res.ok) return;
         const data = (await res.json()) as RoomStateView;
-        if (!cancelled) setState(data);
+        if (!cancelled) setState(mergeLocal(data));
       } catch {
         // ignore transient errors
       }
@@ -125,7 +134,7 @@ export default function RoomClient({ code, initialName, movies }: Props) {
       cancelled = true;
       clearInterval(iv);
     };
-  }, [code, userId]);
+  }, [code, userId, mergeLocal]);
 
   const mySwipes = state?.you?.swipes ?? {};
   const queue = useMemo(
@@ -136,6 +145,8 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   const handleSwipe = useCallback(
     async (movieId: string, swipe: Swipe) => {
       if (!userId) return;
+      if (localSwipes.current[movieId]) return;
+      localSwipes.current[movieId] = swipe;
       setState((prev) =>
         prev
           ? {
@@ -306,7 +317,11 @@ function MovieCard({
   function handlePointerDown(e: React.PointerEvent) {
     if (!active) return;
     startX.current = e.clientX;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // ignore unsupported environments
+    }
   }
   function handlePointerMove(e: React.PointerEvent) {
     if (startX.current == null) return;
@@ -314,7 +329,7 @@ function MovieCard({
   }
   function handlePointerUp() {
     if (startX.current == null) return;
-    const threshold = 80;
+    const threshold = 55;
     if (dx > threshold && onLike) {
       setAnimating("like");
       setTimeout(() => onLike(), 180);
@@ -345,6 +360,7 @@ function MovieCard({
       style={{
         transform: stacked ? undefined : translate,
         transition: startX.current == null ? "transform 200ms ease-out" : "none",
+        touchAction: stacked ? undefined : "none",
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
