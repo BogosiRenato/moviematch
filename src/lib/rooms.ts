@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { Redis } from "@upstash/redis";
+import { isMoodId, isServiceId } from "./selections";
 
 export type Swipe = "like" | "pass";
 
@@ -9,6 +10,11 @@ export type Member = {
   joinedAt: number;
   lastSeen: number;
   swipes: Record<string, Swipe>;
+  moods: string[];
+  services: string[];
+  servicesAny: boolean;
+  selectionSubmittedAt: number | null;
+  selectionSkipped: boolean;
 };
 
 export type Decision = {
@@ -23,6 +29,7 @@ export type Room = {
   createdAt: number;
   members: Record<string, Member>;
   decision?: Decision;
+  moodsRevealed: boolean;
 };
 
 const redis = Redis.fromEnv();
@@ -50,7 +57,12 @@ async function saveRoom(room: Room): Promise<void> {
 export async function createRoom(): Promise<Room> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const code = generateCode();
-    const room: Room = { code, createdAt: Date.now(), members: {} };
+    const room: Room = {
+      code,
+      createdAt: Date.now(),
+      members: {},
+      moodsRevealed: false,
+    };
     const ok = await redis.set(roomKey(code), room, {
       ex: ROOM_TTL_SECONDS,
       nx: true,
@@ -62,7 +74,17 @@ export async function createRoom(): Promise<Room> {
 
 export async function getRoom(code: string): Promise<Room | undefined> {
   const room = await redis.get<Room>(roomKey(code));
-  return room ?? undefined;
+  if (!room) return undefined;
+  // Back-compat for rooms created before the selection fields existed.
+  if (typeof room.moodsRevealed !== "boolean") room.moodsRevealed = false;
+  for (const m of Object.values(room.members)) {
+    if (!Array.isArray(m.moods)) m.moods = [];
+    if (!Array.isArray(m.services)) m.services = [];
+    if (typeof m.servicesAny !== "boolean") m.servicesAny = false;
+    if (m.selectionSubmittedAt === undefined) m.selectionSubmittedAt = null;
+    if (typeof m.selectionSkipped !== "boolean") m.selectionSkipped = false;
+  }
+  return room;
 }
 
 export async function joinRoom(
@@ -88,6 +110,11 @@ export async function joinRoom(
     joinedAt: Date.now(),
     lastSeen: Date.now(),
     swipes: {},
+    moods: [],
+    services: [],
+    servicesAny: false,
+    selectionSubmittedAt: null,
+    selectionSkipped: false,
   };
   await saveRoom(room);
   return { userId, room };
@@ -174,17 +201,25 @@ export function getMatches(room: Room): string[] {
 
 export type RoomStateView = {
   code: string;
+  moodsRevealed: boolean;
   members: Array<{
     id: string;
     name: string;
     swipeCount: number;
     online: boolean;
+    hasSubmitted: boolean;
+    moods: string[]; // empty unless visible to the caller
   }>;
   matches: string[];
   decision?: Decision;
   you?: {
     id: string;
     swipes: Record<string, Swipe>;
+    moods: string[];
+    services: string[];
+    servicesAny: boolean;
+    selectionSubmittedAt: number | null;
+    selectionSkipped: boolean;
   };
 };
 
@@ -197,19 +232,111 @@ export async function getRoomState(
   const room = await getRoom(code);
   if (!room) return null;
   const now = Date.now();
+  const you = userId ? room.members[userId] : undefined;
   return {
     code: room.code,
-    members: Object.values(room.members).map((m) => ({
-      id: m.id,
-      name: m.name,
-      swipeCount: Object.keys(m.swipes).length,
-      online: now - m.lastSeen < ONLINE_WINDOW_MS,
-    })),
+    moodsRevealed: room.moodsRevealed,
+    members: Object.values(room.members).map((m) => {
+      const submitted = m.selectionSubmittedAt !== null;
+      // Caller sees their own moods always. Others' moods only when they've
+      // submitted AND the room has flipped moodsRevealed (once latched, late
+      // submitters reveal on submit — see moodsRevealed semantics).
+      const moodsVisible =
+        m.id === userId || (submitted && room.moodsRevealed);
+      return {
+        id: m.id,
+        name: m.name,
+        swipeCount: Object.keys(m.swipes).length,
+        online: now - m.lastSeen < ONLINE_WINDOW_MS,
+        hasSubmitted: submitted,
+        moods: moodsVisible ? m.moods : [],
+      };
+    }),
     matches: getMatches(room),
     decision: room.decision,
-    you:
-      userId && room.members[userId]
-        ? { id: userId, swipes: room.members[userId].swipes }
-        : undefined,
+    you: you
+      ? {
+          id: you.id,
+          swipes: you.swipes,
+          moods: you.moods,
+          services: you.services,
+          servicesAny: you.servicesAny,
+          selectionSubmittedAt: you.selectionSubmittedAt,
+          selectionSkipped: you.selectionSkipped,
+        }
+      : undefined,
   };
+}
+
+export type SelectionInput = {
+  moods: string[];
+  services: string[];
+  servicesAny: boolean;
+  skip?: boolean;
+};
+
+export type SubmitSelectionResult =
+  | { ok: true; state: RoomStateView }
+  | { ok: false; status: 400 | 403 | 404 | 409; error: string };
+
+export async function submitSelection(
+  code: string,
+  userId: string,
+  input: SelectionInput,
+): Promise<SubmitSelectionResult> {
+  const room = await getRoom(code);
+  if (!room) return { ok: false, status: 404, error: "Room not found" };
+  const member = room.members[userId];
+  if (!member) return { ok: false, status: 403, error: "Not in room" };
+
+  if (member.selectionSubmittedAt !== null) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Selection already submitted for this session",
+    };
+  }
+
+  if (input.skip) {
+    member.moods = [];
+    member.services = [];
+    member.servicesAny = false;
+    member.selectionSkipped = true;
+  } else {
+    if (!Array.isArray(input.moods) || !input.moods.every(isMoodId)) {
+      return { ok: false, status: 400, error: "Invalid mood(s)" };
+    }
+    if (!Array.isArray(input.services) || !input.services.every(isServiceId)) {
+      return { ok: false, status: 400, error: "Invalid service(s)" };
+    }
+    if (input.servicesAny && input.services.length > 0) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Cannot pick 'Any' and specific services together",
+      };
+    }
+    member.moods = Array.from(new Set(input.moods));
+    member.services = Array.from(new Set(input.services));
+    member.servicesAny = !!input.servicesAny;
+    member.selectionSkipped = false;
+  }
+
+  member.selectionSubmittedAt = Date.now();
+  member.lastSeen = Date.now();
+
+  // moodsRevealed is a one-way latch: true once all current members have
+  // submitted/skipped. Late joiners don't un-latch it; their moods just
+  // become visible on submit.
+  if (!room.moodsRevealed) {
+    const all = Object.values(room.members).every(
+      (m) => m.selectionSubmittedAt !== null,
+    );
+    if (all) room.moodsRevealed = true;
+  }
+
+  await saveRoom(room);
+  const state = await getRoomState(code, userId);
+  if (!state) return { ok: false, status: 404, error: "Room not found" };
+  return { ok: true, state };
 }

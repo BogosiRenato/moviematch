@@ -58,15 +58,35 @@ Grab a key at https://www.themoviedb.org/settings/api.
 ```
 src/
   app/
-    page.tsx                   landing (create/join)
-    room/[code]/page.tsx       room (server)
-    room/[code]/RoomClient.tsx swipe deck + matches (client)
-    api/rooms/...              REST endpoints
-    _components/               shared UI
+    page.tsx                        landing (create/join)
+    room/[code]/page.tsx            room (server)
+    room/[code]/RoomClient.tsx      swipe deck + matches (client)
+    room/[code]/SelectionScreen.tsx mood + streaming-service picker (client)
+    api/rooms/[code]/join           POST — join or rejoin a room
+    api/rooms/[code]/state          GET  — poll room state for this user
+    api/rooms/[code]/swipe          POST — record a like / pass
+    api/rooms/[code]/decide         POST/DELETE — lock in / undo "the pick"
+    api/rooms/[code]/select         POST — submit (or skip) moods + services
+    _components/                    shared UI
   lib/
-    rooms.ts                   Redis-backed room store + match logic
-    movies.ts                  TMDB fetcher + fallback list
+    rooms.ts                        Redis-backed room store + match logic
+    movies.ts                       TMDB fetcher + fallback list
+    selections.ts                   canonical mood + streaming-service lists
 ```
+
+## Known design decisions / gotchas
+
+- **Selections are one-shot per session.** After a user submits (or skips) moods
+  and services, the `/select` endpoint returns `409 Conflict` on any further
+  attempt. The client treats 409 as "already done" and transitions into the
+  deck. Editing selections mid-session is a possible future feature; for now
+  the state machine stays simpler and matches user expectations (you pick once,
+  then swipe).
+- **`moodsRevealed` is a one-way latch.** It flips `true` the moment every
+  current member has submitted or skipped, and stays `true` for the life of
+  the room. If someone joins after the latch has flipped, their moods become
+  visible to the room *as soon as they submit* — we don't un-hide the group or
+  re-hide anyone. This keeps late joiners from gating reveal for everyone else.
 
 ## Known limitations
 

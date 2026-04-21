@@ -4,6 +4,8 @@ import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Movie } from "@/lib/movies";
 import type { RoomStateView, Swipe } from "@/lib/rooms";
+import { labelForMood } from "@/lib/selections";
+import SelectionScreen from "./SelectionScreen";
 
 type Props = {
   code: string;
@@ -107,6 +109,21 @@ export default function RoomClient({ code, initialName, movies }: Props) {
     init();
   }, [code, initialName]);
 
+  const refreshState = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const res = await fetch(
+        `/api/rooms/${code}/state?userId=${userId}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as RoomStateView;
+      setState(mergeLocal(data));
+    } catch {
+      // ignore transient errors
+    }
+  }, [code, userId, mergeLocal]);
+
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
@@ -183,7 +200,10 @@ export default function RoomClient({ code, initialName, movies }: Props) {
     : undefined;
   const topMatchId = matchQueue[0];
   const topMatchMovie = topMatchId ? movieById.get(topMatchId) : undefined;
-  const showMatchModal = !!topMatchMovie && !state?.decision;
+  const needsSelection =
+    !!state?.you && state.you.selectionSubmittedAt === null;
+  const showMatchModal =
+    !!topMatchMovie && !state?.decision && !needsSelection;
 
   return (
     <main className="flex flex-1 flex-col px-4 py-6 max-w-2xl mx-auto w-full">
@@ -198,6 +218,12 @@ export default function RoomClient({ code, initialName, movies }: Props) {
         <div className="flex-1 flex items-center justify-center py-8">
           <p className="text-neutral-500 text-sm animate-pulse">Joining room…</p>
         </div>
+      ) : needsSelection ? (
+        <SelectionScreen
+          code={code}
+          userId={userId}
+          onSubmitted={refreshState}
+        />
       ) : (
         <>
           <div className="flex-1 flex items-center justify-center py-8">
@@ -233,31 +259,59 @@ function RoomHeader({ code, state }: { code: string; state: RoomStateView | null
     }
   }
   return (
-    <header className="flex items-center justify-between gap-4">
-      <div>
-        <p className="text-xs uppercase tracking-widest text-neutral-500">Room code</p>
-        <button
-          onClick={copy}
-          className="text-2xl font-mono tracking-[0.4em] text-neutral-100 hover:text-pink-300 transition"
-          title="Click to copy"
-        >
-          {code}
-        </button>
-        {copied && <span className="ml-2 text-xs text-pink-400">copied!</span>}
-      </div>
-      <div className="flex -space-x-2">
-        {state?.members.map((m) => (
-          <div
-            key={m.id}
-            title={`${m.name} — ${m.swipeCount} swipes${m.online ? "" : " (offline)"}`}
-            className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-semibold border-2 border-neutral-950 ${
-              m.online ? "bg-pink-500 text-white" : "bg-neutral-700 text-neutral-300"
-            }`}
+    <header className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-widest text-neutral-500">Room code</p>
+          <button
+            onClick={copy}
+            className="text-2xl font-mono tracking-[0.4em] text-neutral-100 hover:text-pink-300 transition"
+            title="Click to copy"
           >
-            {m.name.slice(0, 1).toUpperCase()}
-          </div>
-        ))}
+            {code}
+          </button>
+          {copied && <span className="ml-2 text-xs text-pink-400">copied!</span>}
+        </div>
+        <div className="flex -space-x-2">
+          {state?.members.map((m) => (
+            <div
+              key={m.id}
+              title={`${m.name} — ${m.swipeCount} swipes${m.online ? "" : " (offline)"}`}
+              className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-semibold border-2 border-neutral-950 ${
+                m.online ? "bg-pink-500 text-white" : "bg-neutral-700 text-neutral-300"
+              }`}
+            >
+              {m.name.slice(0, 1).toUpperCase()}
+            </div>
+          ))}
+        </div>
       </div>
+      {state?.members && state.members.length > 0 && (
+        <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-400">
+          {state.members.map((m) => (
+            <li key={m.id} className="flex items-center gap-1.5">
+              <span className="text-neutral-300 font-medium">{m.name}</span>
+              {!m.hasSubmitted ? (
+                <span className="italic text-neutral-500 inline-flex items-center gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-neutral-500 animate-pulse" />
+                  picking
+                </span>
+              ) : m.moods.length > 0 ? (
+                <span className="flex flex-wrap gap-1">
+                  {m.moods.map((id) => (
+                    <span
+                      key={id}
+                      className="rounded-full bg-pink-500/15 border border-pink-500/40 text-pink-200 px-2 py-0.5 text-[10px] leading-none"
+                    >
+                      {labelForMood(id) ?? id}
+                    </span>
+                  ))}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
     </header>
   );
 }
