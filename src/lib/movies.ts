@@ -54,29 +54,60 @@ type TmdbMovie = {
 let cache: { movies: Movie[]; fetchedAt: number } | null = null;
 const TTL_MS = 60 * 60 * 1000;
 
+async function fetchTmdbPage(
+  path: string,
+  page: number,
+  key: string,
+): Promise<TmdbMovie[]> {
+  const sep = path.includes("?") ? "&" : "?";
+  const url = `https://api.themoviedb.org/3${path}${sep}page=${page}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: "application/json",
+    },
+    next: { revalidate: 3600 },
+  });
+  if (!res.ok) throw new Error(`TMDB ${res.status} ${path} p${page}`);
+  const data = (await res.json()) as { results: TmdbMovie[] };
+  return data.results;
+}
+
 export async function getMovies(): Promise<Movie[]> {
   const key = process.env.TMDB_API_KEY;
   if (!key) return FALLBACK;
 
   if (cache && Date.now() - cache.fetchedAt < TTL_MS) return cache.movies;
 
+  // Pull from both /movie/popular and /discover/movie so the deck isn't
+  // limited to popular's short top-of-list. Discover is sorted by vote_count
+  // with a floor so we get well-known titles beyond popular's first pages.
+  const popularPath = "/movie/popular?language=en-US";
+  const discoverPath =
+    "/discover/movie?language=en-US&include_adult=false&sort_by=vote_count.desc&vote_count.gte=500";
+
   try {
+    const pages = await Promise.all([
+      fetchTmdbPage(popularPath, 1, key),
+      fetchTmdbPage(popularPath, 2, key),
+      fetchTmdbPage(popularPath, 3, key),
+      fetchTmdbPage(discoverPath, 1, key),
+      fetchTmdbPage(discoverPath, 2, key),
+      fetchTmdbPage(discoverPath, 3, key),
+      fetchTmdbPage(discoverPath, 4, key),
+      fetchTmdbPage(discoverPath, 5, key),
+    ]);
+
+    const seen = new Set<string>();
     const movies: Movie[] = [];
-    for (let page = 1; page <= 2; page++) {
-      const url = `https://api.themoviedb.org/3/movie/popular?language=en-US&page=${page}`;
-      const res = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${key}`,
-          Accept: "application/json",
-        },
-        next: { revalidate: 3600 },
-      });
-      if (!res.ok) throw new Error(`TMDB ${res.status}`);
-      const data = (await res.json()) as { results: TmdbMovie[] };
-      for (const m of data.results) {
+    for (const results of pages) {
+      for (const m of results) {
         if (!m.poster_path) continue;
+        const id = `tmdb-${m.id}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
         movies.push({
-          id: `tmdb-${m.id}`,
+          id,
           title: m.title,
           year: m.release_date ? parseInt(m.release_date.slice(0, 4)) : 0,
           overview: m.overview,
@@ -85,6 +116,15 @@ export async function getMovies(): Promise<Movie[]> {
         });
       }
     }
+
+    // Shuffle so popular's top titles don't always lead the deck. Stable
+    // within a cache cycle — all users in the same hour see the same order,
+    // which keeps matching coherent across clients.
+    for (let i = movies.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [movies[i], movies[j]] = [movies[j], movies[i]];
+    }
+
     cache = { movies, fetchedAt: Date.now() };
     return movies;
   } catch {
