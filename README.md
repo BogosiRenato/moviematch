@@ -70,8 +70,10 @@ src/
     _components/                    shared UI
   lib/
     rooms.ts                        Redis-backed room store + match logic
-    movies.ts                       TMDB fetcher + fallback list
+    movies.ts                       TMDB fetcher + fallback list + availability enrichment
     selections.ts                   canonical mood + streaming-service lists
+    region.ts                       per-member region detection (header → env → 'BW')
+    providers.ts                    TMDB watch-providers lookup + in-memory availability cache
 ```
 
 ## Known design decisions / gotchas
@@ -87,6 +89,25 @@ src/
   the room. If someone joins after the latch has flipped, their moods become
   visible to the room *as soon as they submit* — we don't un-hide the group or
   re-hide anyone. This keeps late joiners from gating reveal for everyone else.
+- **Region is set once per member, on first join.** We detect from
+  `x-vercel-ip-country` → `DEFAULT_REGION` env → `'BW'`, store it on the
+  Member record, and never update it on subsequent rejoins or polls.
+  Regions are stable per-device; re-detecting every poll would waste header
+  reads and flap between sources if headers are intermittent. A traveling
+  user gets a fresh region by clearing localStorage (new userId → new join).
+- **In-memory availability cache with split TTLs.** `src/lib/providers.ts`
+  caches TMDB `/movie/{id}/watch/providers` responses by `(movieId, region)`.
+  Successful lookups cache for 24h; failed lookups cache for 1h to prevent
+  retry storms during TMDB outages without long-term poisoning. Availability
+  is process-local — not in Redis — because provider data shifts gradually
+  and per-process freshness is good enough.
+- **TMDB "flatrate" only.** We read `results[region].flatrate` from TMDB's
+  watch-providers response, which covers subscription streaming. We
+  deliberately ignore `rent`, `buy`, `free`, and `ads` — the app's pitch is
+  "what can we watch tonight on a service we already pay for."
+- **Region is exposed only to its owner.** `RoomStateView.you.region` is
+  populated for the calling member; other members never see each other's
+  countries.
 
 ## Known limitations
 
