@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Movie } from "@/lib/movies";
+import type { Movie, MovieWithAvailability } from "@/lib/movies";
 import type { RoomStateView, Swipe } from "@/lib/rooms";
 import { labelForMood } from "@/lib/selections";
 import SelectionScreen from "./SelectionScreen";
@@ -10,7 +10,7 @@ import SelectionScreen from "./SelectionScreen";
 type Props = {
   code: string;
   initialName: string;
-  movies: Movie[];
+  movies: MovieWithAvailability[];
 };
 
 const LS_KEY = (code: string) => `moviematch:${code}:userId`;

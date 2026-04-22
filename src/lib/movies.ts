@@ -1,3 +1,6 @@
+import { getAvailability } from "./providers";
+import type { ServiceId } from "./selections";
+
 export type Movie = {
   id: string;
   title: string;
@@ -5,6 +8,14 @@ export type Movie = {
   overview: string;
   posterUrl: string;
   rating: number;
+};
+
+// Phase 3: per-region availability attached to a movie. The map is keyed by
+// ISO 3166-1 alpha-2 region code. An empty array for a region means "not on
+// any of our 6 services in that region." An empty object means no lookup was
+// attempted (fallback movie, missing TMDB key, or enrichment skipped).
+export type MovieWithAvailability = Movie & {
+  availability: Partial<Record<string, ServiceId[]>>;
 };
 
 function placeholder(title: string, year: number): string {
@@ -130,4 +141,55 @@ export async function getMovies(): Promise<Movie[]> {
   } catch {
     return FALLBACK;
   }
+}
+
+const TMDB_ID_RE = /^tmdb-(\d+)$/;
+const ENRICH_CONCURRENCY = 10;
+
+// Attach per-region availability to each movie. Movies without a real TMDB
+// id (i.e. the hardcoded FALLBACK list, which has ids like "fb-3") get an
+// empty `availability: {}` — we don't fabricate data for them.
+//
+// Cold-start cost is ~N_movies × N_regions TMDB calls bounded to
+// ENRICH_CONCURRENCY in flight. Subsequent calls hit the 24h in-memory
+// cache in providers.ts and are ~free.
+export async function enrichMoviesWithAvailability(
+  movies: Movie[],
+  regions: string[],
+): Promise<MovieWithAvailability[]> {
+  const uniqRegions = Array.from(new Set(regions.filter(Boolean)));
+
+  const availabilityByIndex: Array<Partial<Record<string, ServiceId[]>>> =
+    movies.map(() => ({}));
+
+  type Task = { movieIndex: number; tmdbId: number; region: string };
+  const tasks: Task[] = [];
+  for (let i = 0; i < movies.length; i++) {
+    const match = TMDB_ID_RE.exec(movies[i].id);
+    if (!match) continue; // fallback movie → empty availability map
+    const tmdbId = Number(match[1]);
+    for (const region of uniqRegions) {
+      tasks.push({ movieIndex: i, tmdbId, region });
+    }
+  }
+
+  if (tasks.length > 0) {
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= tasks.length) return;
+        const t = tasks[idx];
+        const services = await getAvailability(t.tmdbId, t.region);
+        availabilityByIndex[t.movieIndex][t.region] = services;
+      }
+    };
+    const workerCount = Math.min(ENRICH_CONCURRENCY, tasks.length);
+    await Promise.all(Array.from({ length: workerCount }, worker));
+  }
+
+  return movies.map((m, i) => ({
+    ...m,
+    availability: availabilityByIndex[i],
+  }));
 }
