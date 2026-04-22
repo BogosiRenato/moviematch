@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { joinRoom } from "@/lib/rooms";
+import { detectRegion } from "@/lib/region";
 
 export async function POST(
   req: Request,
@@ -10,7 +11,8 @@ export async function POST(
     name?: string;
     userId?: string;
   };
-  const result = await joinRoom(code, body.name ?? "", body.userId);
+  const region = detectRegion(req);
+  const result = await joinRoom(code, body.name ?? "", region, body.userId);
   if (!result) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
   }

@@ -15,6 +15,11 @@ export type Member = {
   servicesAny: boolean;
   selectionSubmittedAt: number | null;
   selectionSkipped: boolean;
+  // ISO 3166-1 alpha-2, uppercase. Set once on first create in joinRoom and
+  // never updated: regions are stable per-device, and re-detecting on every
+  // poll wastes header reads. A user who travels gets a fresh region when
+  // they clear localStorage (new userId → new join → new detection).
+  region: string;
 };
 
 export type Decision = {
@@ -83,6 +88,7 @@ export async function getRoom(code: string): Promise<Room | undefined> {
     if (typeof m.servicesAny !== "boolean") m.servicesAny = false;
     if (m.selectionSubmittedAt === undefined) m.selectionSubmittedAt = null;
     if (typeof m.selectionSkipped !== "boolean") m.selectionSkipped = false;
+    if (typeof m.region !== "string" || m.region.length === 0) m.region = "BW";
   }
   return room;
 }
@@ -90,12 +96,15 @@ export async function getRoom(code: string): Promise<Room | undefined> {
 export async function joinRoom(
   code: string,
   name: string,
+  region: string,
   existingUserId?: string,
 ): Promise<{ userId: string; room: Room } | null> {
   const room = await getRoom(code);
   if (!room) return null;
 
   if (existingUserId && room.members[existingUserId]) {
+    // Rejoin: update liveness only. Region stays pinned to first-detect
+    // value — see Member.region comment for rationale.
     const m = room.members[existingUserId];
     m.lastSeen = Date.now();
     if (name && name !== m.name) m.name = name;
@@ -115,6 +124,7 @@ export async function joinRoom(
     servicesAny: false,
     selectionSubmittedAt: null,
     selectionSkipped: false,
+    region,
   };
   await saveRoom(room);
   return { userId, room };
@@ -220,6 +230,9 @@ export type RoomStateView = {
     servicesAny: boolean;
     selectionSubmittedAt: number | null;
     selectionSkipped: boolean;
+    // Region is exposed only to the owning user, never to other members —
+    // they don't need to know each other's countries.
+    region: string;
   };
 };
 
@@ -263,6 +276,7 @@ export async function getRoomState(
           servicesAny: you.servicesAny,
           selectionSubmittedAt: you.selectionSubmittedAt,
           selectionSkipped: you.selectionSkipped,
+          region: you.region,
         }
       : undefined,
   };
