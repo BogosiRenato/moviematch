@@ -41,7 +41,7 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   }, [state]);
 
   const movieById = useMemo(() => {
-    const m = new Map<string, Movie>();
+    const m = new Map<string, MovieWithAvailability>();
     for (const movie of movies) m.set(movie.id, movie);
     return m;
   }, [movies]);
@@ -149,10 +149,24 @@ export default function RoomClient({ code, initialName, movies }: Props) {
   }, [code, userId, mergeLocal]);
 
   const mySwipes = state?.you?.swipes ?? {};
-  const queue = useMemo(
-    () => movies.filter((m) => !mySwipes[m.id]),
-    [movies, mySwipes],
-  );
+  // Render by the server's per-member deckOrder (Phase 4). The ranker
+  // already excludes movies this member has swiped on, so we only need
+  // to filter against localSwipes for optimistic UX. Falls back to the
+  // natural movies order during the brief window before the first
+  // recompute lands (e.g. just-joined SSR race).
+  const queue = useMemo(() => {
+    const order = state?.deckOrder ?? [];
+    if (order.length === 0) {
+      return movies.filter((m) => !mySwipes[m.id]);
+    }
+    const result: MovieWithAvailability[] = [];
+    for (const id of order) {
+      if (mySwipes[id]) continue;
+      const movie = movieById.get(id);
+      if (movie) result.push(movie);
+    }
+    return result;
+  }, [movies, mySwipes, state?.deckOrder, movieById]);
 
   const handleSwipe = useCallback(
     async (movieId: string, swipe: Swipe) => {
