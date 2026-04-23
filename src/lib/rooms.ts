@@ -1,5 +1,12 @@
 import { randomUUID } from "crypto";
 import { Redis } from "@upstash/redis";
+import {
+  enrichMoviesWithAvailability,
+  enrichMoviesWithKeywords,
+  getMovies,
+  getTrendingIds,
+} from "./movies";
+import { rankMoviesForMember } from "./ranker/rank";
 import { isMoodId, isServiceId } from "./selections";
 
 export type Swipe = "like" | "pass";
@@ -35,6 +42,13 @@ export type Room = {
   members: Record<string, Member>;
   decision?: Decision;
   moodsRevealed: boolean;
+  // Phase 4: per-member ranked deck. deckOrder[memberId] is the ordered
+  // list of movie IDs (using the existing Movie.id string convention:
+  // "tmdb-NNN" or "fb-N") for that member. deckOrderComputedAt tracks
+  // staleness per member. Ranking runs on join / selection / swipe — not
+  // on touch or decide. See recomputeDeckOrders.
+  deckOrder: Record<string, string[]>;
+  deckOrderComputedAt: Record<string, number>;
 };
 
 const redis = Redis.fromEnv();
@@ -67,6 +81,8 @@ export async function createRoom(): Promise<Room> {
       createdAt: Date.now(),
       members: {},
       moodsRevealed: false,
+      deckOrder: {},
+      deckOrderComputedAt: {},
     };
     const ok = await redis.set(roomKey(code), room, {
       ex: ROOM_TTL_SECONDS,
@@ -82,6 +98,15 @@ export async function getRoom(code: string): Promise<Room | undefined> {
   if (!room) return undefined;
   // Back-compat for rooms created before the selection fields existed.
   if (typeof room.moodsRevealed !== "boolean") room.moodsRevealed = false;
+  if (!room.deckOrder || typeof room.deckOrder !== "object") {
+    room.deckOrder = {};
+  }
+  if (
+    !room.deckOrderComputedAt ||
+    typeof room.deckOrderComputedAt !== "object"
+  ) {
+    room.deckOrderComputedAt = {};
+  }
   for (const m of Object.values(room.members)) {
     if (!Array.isArray(m.moods)) m.moods = [];
     if (!Array.isArray(m.services)) m.services = [];
@@ -109,6 +134,7 @@ export async function joinRoom(
     m.lastSeen = Date.now();
     if (name && name !== m.name) m.name = name;
     await saveRoom(room);
+    // No rerank on rejoin — nothing ranking-relevant changed.
     return { userId: existingUserId, room };
   }
 
@@ -127,7 +153,9 @@ export async function joinRoom(
     region,
   };
   await saveRoom(room);
-  return { userId, room };
+  await recomputeDeckOrders(code, "join");
+  const refreshed = await getRoom(code);
+  return { userId, room: refreshed ?? room };
 }
 
 export async function recordSwipe(
@@ -143,6 +171,9 @@ export async function recordSwipe(
   member.swipes[movieId] = swipe;
   member.lastSeen = Date.now();
   await saveRoom(room);
+  // Rerank synchronously. For MVP bounded work (40–80 movies × room size,
+  // a few ms). Could be debounced under load — see Phase 4 design notes.
+  await recomputeDeckOrders(code, "swipe");
   return true;
 }
 
@@ -222,6 +253,11 @@ export type RoomStateView = {
   }>;
   matches: string[];
   decision?: Decision;
+  // Rank-ordered movie IDs for the CURRENT user only. Never exposes other
+  // members' orders — the cross-pollination mechanism is meant to be
+  // invisible. Empty when the caller isn't a member or no rank has been
+  // computed yet (e.g. first poll race-in before recompute finishes).
+  deckOrder: string[];
   you?: {
     id: string;
     swipes: Record<string, Swipe>;
@@ -267,6 +303,7 @@ export async function getRoomState(
     }),
     matches: getMatches(room),
     decision: room.decision,
+    deckOrder: userId ? (room.deckOrder[userId] ?? []) : [],
     you: you
       ? {
           id: you.id,
@@ -350,7 +387,64 @@ export async function submitSelection(
   }
 
   await saveRoom(room);
+  await recomputeDeckOrders(code, "selection");
   const state = await getRoomState(code, userId);
   if (!state) return { ok: false, status: 404, error: "Room not found" };
   return { ok: true, state };
+}
+
+// Phase 4: recompute every member's deck order. Called after join /
+// selection submit / swipe. NOT called on touch or decide (those don't
+// affect ranking). Loads fresh from Redis so any concurrent writes are
+// picked up before we overwrite; the whole room is saved back with the
+// TTL refreshed via saveRoom.
+async function recomputeDeckOrders(code: string, reason: string): Promise<void> {
+  const room = await getRoom(code);
+  if (!room) return;
+  const memberIds = Object.keys(room.members);
+  if (memberIds.length === 0) {
+    // Still persist (no-op members) so back-compat fields flushed above
+    // survive.
+    await saveRoom(room);
+    return;
+  }
+
+  try {
+    const baseMovies = await getMovies();
+    const regions = Array.from(
+      new Set(
+        Object.values(room.members)
+          .map((m) => m.region)
+          .filter(Boolean),
+      ),
+    );
+    const withAvail = await enrichMoviesWithAvailability(baseMovies, regions);
+    const withKeywords = await enrichMoviesWithKeywords(withAvail);
+    // enrichMoviesWithKeywords preserves the MovieWithAvailability shape —
+    // it only mutates the keywords field.
+    const movies = withKeywords as typeof withAvail;
+    const trendingIds = await getTrendingIds();
+
+    const now = Date.now();
+    for (const memberId of memberIds) {
+      const result = rankMoviesForMember({
+        memberId,
+        room,
+        movies,
+        trendingIds,
+      });
+      room.deckOrder[memberId] = result.orderedMovieIds;
+      room.deckOrderComputedAt[memberId] = now;
+    }
+
+    await saveRoom(room);
+    console.log(`[ranker] recomputed for room ${code}, reason=${reason}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[ranker] recompute failed for room ${code}, reason=${reason}: ${msg}`,
+    );
+    // Leave the previous deckOrder in place; clients will render the last
+    // known good order until the next successful recompute.
+  }
 }
