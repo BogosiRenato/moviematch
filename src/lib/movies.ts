@@ -8,6 +8,13 @@ export type Movie = {
   overview: string;
   posterUrl: string;
   rating: number;
+  // Ranker-facing metadata. Populated from TMDB where available;
+  // defaulted for FALLBACK entries (keywords are enriched lazily — see
+  // enrichMoviesWithKeywords).
+  voteCount: number;
+  popularity: number;
+  genres: number[];
+  keywords: string[];
 };
 
 // Phase 3: per-region availability attached to a movie. The map is keyed by
@@ -51,6 +58,13 @@ const FALLBACK: Movie[] = [
   overview: overview as string,
   rating: rating as number,
   posterUrl: placeholder(title as string, year as number),
+  // Honest defaults for fallback: no TMDB metadata available. The ranker's
+  // neutral-fallback logic (see signals.ts) keeps these from being unfairly
+  // penalized when TMDB is out.
+  voteCount: 0,
+  popularity: 0,
+  genres: [],
+  keywords: [],
 }));
 
 type TmdbMovie = {
@@ -60,6 +74,9 @@ type TmdbMovie = {
   overview: string;
   poster_path: string | null;
   vote_average: number;
+  vote_count: number;
+  popularity: number;
+  genre_ids: number[];
 };
 
 let cache: { movies: Movie[]; fetchedAt: number } | null = null;
@@ -124,6 +141,10 @@ export async function getMovies(): Promise<Movie[]> {
           overview: m.overview,
           rating: Math.round(m.vote_average * 10) / 10,
           posterUrl: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
+          voteCount: m.vote_count ?? 0,
+          popularity: m.popularity ?? 0,
+          genres: Array.isArray(m.genre_ids) ? m.genre_ids : [],
+          keywords: [],
         });
       }
     }
@@ -193,3 +214,4 @@ export async function enrichMoviesWithAvailability(
     availability: availabilityByIndex[i],
   }));
 }
+
