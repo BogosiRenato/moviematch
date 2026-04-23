@@ -215,3 +215,141 @@ export async function enrichMoviesWithAvailability(
   }));
 }
 
+// --- Phase 4: trending + keyword enrichment -------------------------------
+
+type TrendingCache = { ids: Map<number, number>; fetchedAt: number };
+let trendingCache: TrendingCache | null = null;
+const TRENDING_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Trending IDs from TMDB /trending/movie/week (week is stabler than day;
+// reflects genuine momentum rather than single-day spikes). Map is
+// movieId → 1-indexed rank. Empty map means TMDB unavailable or no key.
+export async function getTrendingIds(): Promise<Map<number, number>> {
+  const key = process.env.TMDB_API_KEY;
+  if (!key) return new Map();
+  if (trendingCache && Date.now() - trendingCache.fetchedAt < TRENDING_TTL_MS) {
+    return trendingCache.ids;
+  }
+  try {
+    const res = await fetch(
+      "https://api.themoviedb.org/3/trending/movie/week?language=en-US",
+      {
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: "application/json",
+        },
+        next: { revalidate: TRENDING_TTL_MS / 1000 },
+      },
+    );
+    if (!res.ok) throw new Error(`TMDB trending ${res.status}`);
+    const data = (await res.json()) as { results: Array<{ id: number }> };
+    const ids = new Map<number, number>();
+    data.results.forEach((m, i) => ids.set(m.id, i + 1));
+    trendingCache = { ids, fetchedAt: Date.now() };
+    return ids;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[movies] trending fetch failed: ${msg}`);
+    // Don't cache on failure — next call retries. Trending is cheap (one
+    // request) so no retry-storm protection needed.
+    return new Map();
+  }
+}
+
+type KeywordCacheEntry = { keywords: string[]; expiresAt: number };
+const keywordCache = new Map<number, KeywordCacheEntry>();
+const KEYWORDS_TTL_MS = 24 * 60 * 60 * 1000;
+let warnedMissingKeyForKeywords = false;
+
+async function fetchKeywordsForMovie(
+  tmdbId: number,
+  key: string,
+): Promise<string[]> {
+  const res = await fetch(
+    `https://api.themoviedb.org/3/movie/${tmdbId}/keywords`,
+    {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+      next: { revalidate: KEYWORDS_TTL_MS / 1000 },
+    },
+  );
+  if (!res.ok) throw new Error(`TMDB keywords ${res.status}`);
+  const data = (await res.json()) as { keywords?: Array<{ name: string }> };
+  if (!Array.isArray(data.keywords)) return [];
+  // Lowercase so mood→keyword matching is case-insensitive.
+  return data.keywords.map((k) => k.name.toLowerCase());
+}
+
+// Attach TMDB keywords to each movie. Per-movie 24h in-memory cache to
+// match the providers cache pattern. Adds ~N_movies TMDB calls on cold
+// start, bounded to ENRICH_CONCURRENCY. Subsequent room loads are free.
+// Fallback movies (id not matching tmdb-NNN) get an empty keyword list —
+// no fabricated data.
+export async function enrichMoviesWithKeywords(
+  movies: Movie[],
+): Promise<Movie[]> {
+  const key = process.env.TMDB_API_KEY;
+  if (!key) {
+    if (!warnedMissingKeyForKeywords) {
+      warnedMissingKeyForKeywords = true;
+      console.warn(
+        "[movies] TMDB_API_KEY not set — keyword enrichment skipped, moods will match on genres only",
+      );
+    }
+    return movies;
+  }
+
+  type Task = { movieIndex: number; tmdbId: number };
+  const tasks: Task[] = [];
+  const results: string[][] = movies.map((m) => m.keywords);
+  const now = Date.now();
+
+  for (let i = 0; i < movies.length; i++) {
+    const match = TMDB_ID_RE.exec(movies[i].id);
+    if (!match) continue;
+    const tmdbId = Number(match[1]);
+    const hit = keywordCache.get(tmdbId);
+    if (hit && hit.expiresAt > now) {
+      results[i] = hit.keywords;
+      continue;
+    }
+    tasks.push({ movieIndex: i, tmdbId });
+  }
+
+  if (tasks.length > 0) {
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= tasks.length) return;
+        const t = tasks[idx];
+        try {
+          const kws = await fetchKeywordsForMovie(t.tmdbId, key);
+          keywordCache.set(t.tmdbId, {
+            keywords: kws,
+            expiresAt: Date.now() + KEYWORDS_TTL_MS,
+          });
+          results[t.movieIndex] = kws;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[movies] keywords fetch failed movieId=${t.tmdbId}: ${msg}`,
+          );
+          // Short-TTL cache the failure so we don't hammer TMDB on a bad id.
+          keywordCache.set(t.tmdbId, {
+            keywords: [],
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          });
+          results[t.movieIndex] = [];
+        }
+      }
+    };
+    const workerCount = Math.min(ENRICH_CONCURRENCY, tasks.length);
+    await Promise.all(Array.from({ length: workerCount }, worker));
+  }
+
+  return movies.map((m, i) => ({ ...m, keywords: results[i] }));
+}
+
