@@ -69,11 +69,16 @@ src/
     api/rooms/[code]/select         POST — submit (or skip) moods + services
     _components/                    shared UI
   lib/
-    rooms.ts                        Redis-backed room store + match logic
-    movies.ts                       TMDB fetcher + fallback list + availability enrichment
+    rooms.ts                        Redis-backed room store + match logic + deckOrder recompute
+    movies.ts                       TMDB fetcher + fallback list + availability/keyword/trending enrichment
     selections.ts                   canonical mood + streaming-service lists
     region.ts                       per-member region detection (header → env → 'BW')
     providers.ts                    TMDB watch-providers lookup + in-memory availability cache
+    mood-mapping.ts                 mood → TMDB genre / keyword mapping for the ranker
+    ranker/
+      weights.ts                    tunable weights + CROSS_POLLINATION_BOOST + SIMILARITY_RAMP + DIVERSITY_WINDOW
+      signals.ts                    moodMatch / availability / similarityToLikes / trending / quality
+      rank.ts                       composes signals, applies boost + diversity, returns ordered IDs
 ```
 
 ## Known design decisions / gotchas
@@ -108,6 +113,35 @@ src/
 - **Region is exposed only to its owner.** `RoomStateView.you.region` is
   populated for the calling member; other members never see each other's
   countries.
+- **Per-member deck, event-driven ranking.** Each member gets their own
+  `deckOrder` computed server-side from five signals — mood match,
+  availability, similarity-to-likes (ramped by the member's own swipe
+  count), trending, and quality — combined as a weighted sum (see
+  `src/lib/ranker/weights.ts` for the knobs). Recompute runs on member
+  join, selection submit, and swipe. It does NOT run on `touchMember`
+  (every poll) or on `decideMovie` / `clearDecision` (pick state doesn't
+  change ranking).
+- **Cross-pollination is invisible.** When any member likes a movie, that
+  movie gets a flat `CROSS_POLLINATION_BOOST` added to its score in every
+  OTHER member's deck — the group converges on potential matches without
+  anyone seeing who liked what. No UI indicator, no tag, no tooltip.
+  Cross-pollination opacity ends only when both members have liked the
+  same movie and the existing match logic fires. A member's own likes
+  never boost their own deck — both because they sum only over "others"
+  and because already-swiped movies are excluded from the member's own
+  deck anyway.
+- **Ranker fails soft.** If TMDB is unreachable (no key, network error,
+  rate limit), every signal that depends on TMDB metadata returns 0.5
+  neutral rather than 0, so we don't penalize movies just because data
+  is missing. The deck may look less personalized, but it doesn't
+  crash or degrade to empty. If `recomputeDeckOrders` itself throws, we
+  keep the previous deck order and wait for the next event.
+- **Rerank is synchronous per swipe.** For an MVP at 40–80 movies and
+  small rooms this is a few milliseconds of work; not worth the
+  complexity of debouncing yet. If a fast swiper's requests queue up,
+  that's the correct serialization — their next card can only come from
+  ranking that already accounts for their last swipe. Can be debounced
+  under real load; tracked as a comment in `recordSwipe`.
 
 ## Known limitations
 
